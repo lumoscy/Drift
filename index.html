@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>台风实验室 · 全球版</title>
 <meta name="description" content="在地球上任意一片海放下一个热带扰动，看它被引导气流带去哪里、被海温养成多强。覆盖全球七个洋盆的台风、飓风、气旋模拟器。">
-<meta name="theme-color" content="#05070d">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='16' fill='%2305070d'/%3E%3Cpath d='M16 5c6 0 9 4 9 8-3-3-7-3-9-1-2 2-2 5 0 7 2 2 5 2 7 0-1 5-4 8-7 8-6 0-9-4-9-8 3 3 7 3 9 1 2-2 2-5 0-7-2-2-5-2-7 0 1-5 4-8 7-8z' fill='%235fe3d0'/%3E%3C/svg%3E">
+<meta name="theme-color" content="#eef2f7">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='16' fill='%23ffffff'/%3E%3Cpath d='M16 5c6 0 9 4 9 8-3-3-7-3-9-1-2 2-2 5 0 7 2 2 5 2 7 0-1 5-4 8-7 8-6 0-9-4-9-8 3 3 7 3 9 1 2-2 2-5 0-7-2-2-5-2-7 0 1-5 4-8 7-8z' fill='%230b8f80'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;900&family=JetBrains+Mono:wght@400;600&display=swap">
@@ -96,7 +96,7 @@
     </section>
 
     <footer class="foot">
-      <p>这是一个帮助理解的概念模型，不是预报。气候场是手工搭建的解析近似，不是再分析资料；历史路径来自 IBTrACS。</p>
+      <p>这是一个帮助理解的概念模型，不是预报。气候场是手工搭建的解析近似，云图是按风暴结构实时生成的，都不是观测资料；历史路径来自 IBTrACS。</p>
     </footer>
   </aside>
 
@@ -108,6 +108,15 @@
       </div>
       <div class="big"><b id="vNow" class="num">—</b><span>m/s</span><em id="vAlt" class="num"></em></div>
       <div class="meter" aria-hidden="true"><i id="meterFill"></i><u id="meterCap" title="此刻环境允许的强度上限"></u></div>
+      <div class="sat">
+        <canvas id="sat" width="640" height="640" aria-label="风暴的卫星云图特写"></canvas>
+        <span class="sat-phase" id="phase">—</span>
+        <span class="sat-scale" id="satScale"></span>
+        <div class="sat-mode" role="group" aria-label="云图模式">
+          <button type="button" id="modeVis" aria-pressed="true">可见光</button>
+          <button type="button" id="modeIr" aria-pressed="false">红外增强</button>
+        </div>
+      </div>
       <dl class="kv">
         <div><dt>中心气压</dt><dd id="kP" class="num">—</dd></div>
         <div><dt>位置</dt><dd id="kPos" class="num">—</dd></div>
@@ -115,6 +124,8 @@
         <div><dt>脚下海温</dt><dd id="kSstNow" class="num">—</dd></div>
         <div><dt>风切变</dt><dd id="kShear" class="num">—</dd></div>
         <div><dt>24 小时趋势</dt><dd id="kTrend" class="num">—</dd></div>
+        <div><dt>七级风圈半径</dt><dd id="kR34" class="num">—</dd></div>
+        <div><dt>风眼</dt><dd id="kEye" class="num">—</dd></div>
       </dl>
       <p class="why" id="why">点「放置扰动」，然后在地球的海面上点一下。也可以先试试下面的经典场景。</p>
     </section>
@@ -125,6 +136,8 @@
         <button class="btn ghost" id="reroll" type="button" title="同一起点，换一种天气再来一次" disabled>🎲 再来一次</button>
       </div>
       <label class="check"><input type="checkbox" id="noisy"> 加入天气随机性（每次结果不同）</label>
+      <label class="check"><input type="checkbox" id="follow" checked> 镜头跟着风暴走</label>
+      <label class="check"><input type="checkbox" id="rings" checked> 显示七级风圈（黄色虚线）</label>
       <div class="knob">
         <div class="row"><label for="size">风暴尺度</label><output id="oSize" class="num">300 km</output></div>
         <input id="size" type="range" min="150" max="600" step="10" value="300">

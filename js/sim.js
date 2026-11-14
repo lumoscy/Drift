@@ -146,6 +146,55 @@ export function diagnose(env, lat, lon, v, size = 300, noise = null) {
   return { us, vs, bu, bv, mu: us + bu, mv: vs + bv, sst, shear, mpi, onLand, coast, shearFactor, spin, potential };
 }
 
+// What the storm looks like, hour by hour: how big it is, how well organised, whether it has an
+// eye, which way the shear is tilting it. The cloud renderer draws straight from these numbers.
+function addStructure(points, events, size0) {
+  let org = 0.05;
+  let eye = 0;
+  let landf = 0;
+  let et = 0;
+  let grown = 0;
+  let sawEye = false;
+  let sawRapid = false;
+  for (let i = 0; i < points.length; i += 1) {
+    const p = points[i];
+    const a = Math.abs(p.lat);
+    const h = p.lat >= 0 ? 1 : -1;
+    landf += ((p.land ? 1 : 0) - landf) / (p.land ? 8 : 14);
+    et += ((p.stage === "extratropical" ? 1 : 0) - et) / 20;
+    const shearMag = clamp((p.shear - 6) / 18, 0, 1);
+    const target = clamp((p.v - 11) / 30, 0, 1) * (1 - 0.55 * shearMag) * (1 - 0.6 * landf) * (1 - 0.5 * et);
+    org += (target - org) / (target > org ? 16 : 7);
+    const eyeTarget = clamp((p.v - 31) / 16, 0, 1) * clamp(org * 1.4, 0, 1) * (1 - landf) * (1 - et) * (1 - 0.75 * p.erc);
+    eye += (eyeTarget - eye) / (eyeTarget > eye ? 10 : 5);
+    // The wind field keeps widening with age, with latitude, and after every eyewall cycle.
+    grown += p.erc > 0.5 ? 0.004 : 0;
+    const r34 = size0 * (0.5 + 0.5 * (1 - Math.exp(-p.hour / 80))) * (0.72 + 0.28 * clamp(p.v / 40, 0, 1)) *
+      (1 + 0.4 * clamp((a - 18) / 22, 0, 1) + grown + 0.45 * et) * (1 - 0.25 * landf);
+    // Deep tropics: easterly shear. Toward the mid-latitudes: westerlies aloft, blowing poleward and east.
+    const sx = Math.tanh((a - 17) / 6);
+    const sy = 0.45 * h;
+    const norm = Math.hypot(sx, sy) || 1;
+    Object.assign(p, {
+      r34, org, eye, landf, et, shearMag, sx: sx / norm, sy: sy / norm,
+      eyeR: 0.05 + 0.04 * (1 - clamp((p.v - 33) / 35, 0, 1)) + 0.03 * grown * 10 + 0.02 * p.erc,
+      ring: p.erc
+    });
+    p.phase = p.land ? "登陆减弱" : et > 0.3 ? "变性中" : p.erc > 0.25 ? "眼墙置换" :
+      shearMag > 0.6 && p.v > 14 ? "受切变压制" : eye > 0.55 ? (p.v >= 51 ? "巅峰期 · 风眼清晰" : "成熟期 · 有眼") :
+        p.dv < -4 ? "减弱中" : org < 0.3 ? "初生 · 对流零散" : p.dv > 9 ? "快速发展 · 云带收紧" : "发展期 · 云带成形";
+    if (!sawEye && eye > 0.5) {
+      sawEye = true;
+      events.push({ hour: p.hour, type: "eye", lat: p.lat, lon: p.lon, v: p.v, basin: p.basin });
+    }
+    const later = points[Math.min(points.length - 1, i + 24)];
+    if (!sawRapid && later.v - p.v >= 15.4 && !p.land) {
+      sawRapid = true;
+      events.push({ hour: p.hour, type: "rapid", lat: p.lat, lon: p.lon, v: p.v, basin: p.basin, gain: later.v - p.v });
+    }
+  }
+}
+
 export function simulateStorm(options) {
   const {
     lat: lat0, lon: lon0, month, knobs = DEFAULT_KNOBS, land = null,
@@ -164,6 +213,10 @@ export function simulateStorm(options) {
   let peak = v0;
   let stage = "tropical";
   let weakHours = 0;
+  // Eyewall replacement: a strong storm grows an outer eyewall that chokes the inner one,
+  // so it weakens for half a day, then comes back with a bigger eye and a wider wind field.
+  let ercClock = -1;
+  let lastErc = -999;
   let overLand = env.land ? env.land.isLand(lat, lon) === 1 : false;
   const points = [];
   const events = [];
@@ -193,6 +246,18 @@ export function simulateStorm(options) {
       events.push({ hour, type: "transition", lat, lon, v, basin });
     }
 
+    if (ercClock < 0 && stage === "tropical" && !d.onLand && v > 50 && v > d.potential * 0.9 && hour - lastErc > 60) {
+      ercClock = 0;
+      lastErc = hour;
+      events.push({ hour, type: "erc", lat, lon, v, basin });
+    }
+    let erc = 0;
+    if (ercClock >= 0) {
+      erc = Math.sin((Math.PI * ercClock) / 30);
+      d.potential *= 1 - 0.22 * Math.sin((Math.PI * Math.min(ercClock, 18)) / 18);
+      ercClock = ercClock >= 30 ? -1 : ercClock + 1;
+    }
+
     let dv;
     if (d.onLand) {
       dv = -(v - 8) / 11;
@@ -207,7 +272,7 @@ export function simulateStorm(options) {
     points.push({
       hour, lat, lon, v, p: pressureOf(v), basin, stage, land: d.onLand,
       sst: d.sst, shear: d.shear, mpi: d.mpi, potential: d.potential, dv: dv * 24,
-      us: d.us, vs: d.vs, bu: d.bu, bv: d.bv
+      us: d.us, vs: d.vs, bu: d.bu, bv: d.bv, erc
     });
 
     v = Math.max(5, v + dv);
@@ -240,6 +305,8 @@ export function simulateStorm(options) {
     }
   }
 
+  addStructure(points, events, size);
+  events.sort((a, b) => a.hour - b.hour);
   const peakPoint = points.reduce((best, p) => (p.v > best.v ? p : best), points[0]);
   return {
     points, events, end, peak: peakPoint.v, peakHour: peakPoint.hour, pmin: pressureOf(peakPoint.v),
