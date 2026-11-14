@@ -4,6 +4,7 @@ import {
   colorOf, INTENSITY_STEPS, KT
 } from "./sim.js";
 import { createGlobe, rampCss } from "./globe.js";
+import { VIEW_R34 } from "./cloud.js";
 
 const $ = (id) => document.getElementById(id);
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
@@ -12,7 +13,7 @@ const MAX_WIND = 85;
 const state = {
   month: 8.5,
   knobs: { enso: 0, sst: 0, high: 0, west: 0 },
-  layer: "sst",
+  layer: "none",
   land: null,
   env: null,
   storm: null,
@@ -69,7 +70,7 @@ function refreshEnv() {
     $("legendTicks").innerHTML = [info.min, mid, info.max].map((v) => `<span>${state.layer === "gp" ? ["低", "", "高"][[info.min, mid, info.max].indexOf(v)] : Math.round(v)}</span>`).join("");
     $("layerDesc").textContent = info.desc;
   } else {
-    $("layerDesc").textContent = "只看地球和风。";
+    $("layerDesc").textContent = "从太空看到的样子：蓝色的海、陆地和云。";
   }
 }
 
@@ -116,6 +117,9 @@ function launch(origin, { keepTime = false, quiet = false } = {}) {
 function explain(p, storm) {
   const sst = p.sst.toFixed(1);
   const shear = p.shear.toFixed(0);
+  if (p.erc > 0.25 && !p.land) {
+    return "正在眼墙置换：外圈长出了一道新眼墙，抢走了内眼墙的入流。强度先掉一截，等新眼墙收缩到位，会带着更大的风眼和更宽的风圈回来。";
+  }
   if (p.land) {
     return "已经在陆地上：断了海洋的水汽和热量，地面摩擦又大，所以迅速减弱。";
   }
@@ -152,7 +156,7 @@ function renderStorm() {
   const badge = $("badge");
   badge.textContent = p.stage === "extratropical" ? "温带气旋" : cls.name;
   badge.style.background = colorOf(p.v);
-  badge.style.color = "#06121f";
+  badge.style.color = "#0b1626";
   $("agency").textContent = `${BASINS[p.basin].name} · ${SCALE_NAMES[cls.scaleId]}`;
   $("vNow").textContent = p.v.toFixed(0);
   $("vAlt").innerHTML = `${Math.round(p.v * 3.6)} km/h<br>${Math.round(p.v * KT)} kt`;
@@ -169,6 +173,10 @@ function renderStorm() {
   const later = storm.points[Math.min(storm.points.length - 1, hour + 24)];
   const trend = later.v - p.v;
   $("kTrend").textContent = `${trend >= 0 ? "+" : "−"}${Math.abs(trend).toFixed(0)} m/s`;
+  $("kR34").textContent = `${Math.round(p.r34)} km`;
+  $("kEye").textContent = p.eye > 0.5 ? `直径约 ${Math.round(p.eyeR * p.r34 * 2)} km` : p.eye > 0.2 ? "若隐若现" : "无";
+  $("phase").textContent = p.phase;
+  $("satScale").textContent = `画面宽 ${Math.round((p.r34 * VIEW_R34 * 2) / 100) * 100} km`;
   $("why").textContent = explain(p, storm);
   $("time").value = String(state.hour);
   $("clock").textContent = dayLabel(hour);
@@ -186,6 +194,12 @@ function renderEvents() {
       rows.push([e.hour, `加强为${e.name}（${e.v.toFixed(0)} m/s）`]);
     } else if (e.type === "landfall") {
       rows.push([e.hour, `登陆 ${fmtLat(e.lat)} ${fmtLon(e.lon)}，登陆时 ${e.v.toFixed(0)} m/s`]);
+    } else if (e.type === "eye") {
+      rows.push([e.hour, "风眼打开了：眼墙的对流足够强、足够对称"]);
+    } else if (e.type === "erc") {
+      rows.push([e.hour, "眼墙置换开始：外面长出新眼墙，会先弱一阵，再带着更大的眼回来"]);
+    } else if (e.type === "rapid") {
+      rows.push([e.hour, `快速增强：之后 24 小时增强 ${e.gain.toFixed(0)} m/s`]);
     } else if (e.type === "transition") {
       rows.push([e.hour, "进入冷水和西风带，开始变性"]);
     }
@@ -225,7 +239,7 @@ function drawChart() {
     const top = Math.max(4, ...bins);
     const bw = w / bins.length;
     bins.forEach((n, i) => {
-      ctx.fillStyle = i * 3 <= state.day ? "rgba(95,227,208,0.8)" : "rgba(160,190,255,0.22)";
+      ctx.fillStyle = i * 3 <= state.day ? "rgba(11,143,128,0.85)" : "rgba(24,48,92,0.16)";
       ctx.fillRect(i * bw, h - (n / top) * h, Math.max(1, bw - 1), (n / top) * h);
     });
     return;
@@ -238,14 +252,14 @@ function drawChart() {
   const x = (hour) => (hour / Math.max(1, storm.hours)) * w;
   const y = (v) => h - clamp(v / MAX_WIND, 0, 1) * h;
   for (const [bound] of INTENSITY_STEPS.slice(1, 6)) {
-    ctx.strokeStyle = "rgba(160,190,255,0.1)";
+    ctx.strokeStyle = "rgba(24,48,92,0.1)";
     ctx.beginPath();
     ctx.moveTo(0, y(bound));
     ctx.lineTo(w, y(bound));
     ctx.stroke();
   }
   ctx.setLineDash([3, 4]);
-  ctx.strokeStyle = "rgba(255,255,255,0.3)";
+  ctx.strokeStyle = "rgba(24,48,92,0.4)";
   ctx.beginPath();
   pts.forEach((p, i) => (i ? ctx.lineTo(x(p.hour), y(p.potential)) : ctx.moveTo(x(p.hour), y(p.potential))));
   ctx.stroke();
@@ -263,7 +277,7 @@ function drawChart() {
   ctx.globalAlpha = 1;
   for (const e of storm.events) {
     if (e.type === "landfall") {
-      ctx.fillStyle = "#fff";
+      ctx.fillStyle = "#152033";
       ctx.beginPath();
       ctx.moveTo(x(e.hour), y(e.v) - 9);
       ctx.lineTo(x(e.hour) + 4, y(e.v) - 3);
@@ -271,7 +285,7 @@ function drawChart() {
       ctx.fill();
     }
   }
-  ctx.strokeStyle = "rgba(255,255,255,0.7)";
+  ctx.strokeStyle = "rgba(21,32,51,0.7)";
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(x(state.hour), 0);
@@ -316,8 +330,52 @@ function tick(now) {
       setPlaying(false);
     }
     renderStorm();
+    followStorm(now);
   }
+  drawSatellite(now / 1000);
   requestAnimationFrame(tick);
+}
+
+// Keeps the storm in frame without dragging the globe every frame: a short glide whenever it strays.
+let lastFollow = 0;
+function followStorm(now) {
+  if (!$("follow").checked || now - lastFollow < 900) {
+    return;
+  }
+  const p = state.storm.points[Math.min(state.storm.points.length - 1, Math.round(state.hour))];
+  const dLon = ((p.lon - globe.view.lon + 540) % 360) - 180;
+  if (Math.hypot(dLon * Math.cos((p.lat * Math.PI) / 180), p.lat - globe.view.lat) > 9) {
+    lastFollow = now;
+    globe.flyTo(p.lon, p.lat, globe.view.zoom, 1.2);
+  }
+}
+
+// The close-up: the same shader picture the globe uses, full frame, over sea or land.
+function drawSatellite(time) {
+  const canvas = $("sat");
+  const ctx = canvas.getContext("2d");
+  const storm = state.storm;
+  const w = canvas.width;
+  if (!storm) {
+    const g = ctx.createLinearGradient(0, 0, 0, w);
+    g.addColorStop(0, "#1c5590");
+    g.addColorStop(1, "#143f73");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, w);
+    return;
+  }
+  const p = storm.points[Math.min(storm.points.length - 1, Math.round(state.hour))];
+  const infrared = globe.scene.infrared;
+  ctx.fillStyle = infrared ? "#3a3d42" : p.land ? "#6f8f62" : "#17497f";
+  ctx.fillRect(0, 0, w, w);
+  if (!infrared && p.landf > 0.02 && !p.land) {
+    ctx.fillStyle = `rgba(111,143,98,${p.landf * 0.6})`;
+    ctx.fillRect(0, 0, w, w);
+  }
+  if (globe.cloud.ok) {
+    globe.cloud.render(p, time * 0.6 + state.hour * 0.05, { infrared, seed: storm.seed });
+    ctx.drawImage(globe.cloud.canvas, 0, 0, w, w);
+  }
 }
 
 // ---------- a whole year ----------
@@ -367,6 +425,8 @@ function runSeason() {
       ? `这一年最强的是${stats.strongest.label}，巅峰 ${stats.strongest.peak.toFixed(0)} m/s。注意看：北半球夏秋热闹，南半球要等到年初年尾；南大西洋和东南太平洋几乎一片空白。`
       : "这一年没有命名风暴。";
     $("events").innerHTML = '<li class="muted">全年模式下不显示单个风暴的经历。</li>';
+    $("phase").textContent = "全年模式";
+    $("satScale").textContent = "";
     $("seasonTiles").innerHTML = [
       [stats.total.named, "命名风暴"],
       [stats.total.strong, "台风 / 飓风级"],
@@ -508,7 +568,7 @@ async function main() {
   $("basins").innerHTML = Object.entries(BASINS)
     .filter(([, b]) => b.target)
     .map(([key, b]) => `<button class="chip" type="button" data-basin="${key}">${b.name}</button>`).join("");
-  $("layers").innerHTML = [...Object.entries(LAYERS).map(([key, l]) => [key, l.name]), ["none", "不显示"]]
+  $("layers").innerHTML = [["none", "自然色"], ...Object.entries(LAYERS).map(([key, l]) => [key, l.name])]
     .map(([key, name]) => `<button type="button" data-layer="${key}" aria-pressed="${key === state.layer}">${name}</button>`).join("");
   $("presets").innerHTML = PRESETS
     .map(([icon, name, desc], i) => `<button class="preset" type="button" data-preset="${i}"><i>${icon}</i><b>${name}</b><span>${desc}</span></button>`).join("");
@@ -620,6 +680,16 @@ async function main() {
   });
 
   $("place").addEventListener("click", () => setPlacing(!state.placing));
+  $("rings").addEventListener("change", () => {
+    globe.scene.rings = $("rings").checked;
+  });
+  const setMode = (infrared) => {
+    globe.scene.infrared = infrared;
+    $("modeVis").setAttribute("aria-pressed", String(!infrared));
+    $("modeIr").setAttribute("aria-pressed", String(infrared));
+  };
+  $("modeVis").addEventListener("click", () => setMode(false));
+  $("modeIr").addEventListener("click", () => setMode(true));
   $("reroll").addEventListener("click", () => {
     if (state.origin) {
       $("noisy").checked = true;

@@ -5,6 +5,7 @@
 
 import { NLON, NLAT, LAND_W, LAND_H, wrapLon } from "./env.js";
 import { colorOf } from "./sim.js";
+import { createCloudRenderer, VIEW_R34 } from "./cloud.js";
 
 const DEG = Math.PI / 180;
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
@@ -75,7 +76,7 @@ export function createGlobe(host, { land, coast }) {
   let fly = null;
   let autoSpin = !reduceMotion;
   let showWind = !reduceMotion;
-  const scene = { storm: null, hour: 0, season: null, day: 0, history: null, ghost: null, placing: false, cursor: null };
+  const scene = { storm: null, hour: 0, season: null, day: 0, history: null, placing: false, cursor: null, infrared: false, rings: true };
   const handlers = { pick: null, hover: null, view: null };
 
   // ---------- projection ----------
@@ -157,10 +158,20 @@ export function createGlobe(host, { land, coast }) {
         let g;
         let b;
         if ((landBytes[li >> 3] >> (li & 7)) & 1) {
-          const ice = Math.abs(lat) > 66 ? clamp((Math.abs(lat) - 66) / 8, 0, 1) : 0;
-          r = 34 + 70 * ice;
-          g = 40 + 72 * ice;
-          b = 52 + 76 * ice;
+          const al = Math.abs(lat);
+          const ice = al > 62 ? clamp((al - 62) / 9, 0, 1) : 0;
+          if (grid) {
+            // Under a data layer the land steps back to a quiet slate.
+            r = 70 + 150 * ice;
+            g = 78 + 148 * ice;
+            b = 92 + 142 * ice;
+          } else {
+            // Forest green at the equator and in the temperate belt, drier in the subtropics.
+            const dry = Math.exp(-Math.pow((al - 24) / 9, 2));
+            r = 74 + 92 * dry + 150 * ice;
+            g = 112 + 34 * dry + 120 * ice;
+            b = 70 + 34 * dry + 165 * ice;
+          }
         } else if (grid) {
           const y = lat + 90;
           const j = Math.min(NLAT - 2, y | 0);
@@ -177,9 +188,11 @@ export function createGlobe(host, { land, coast }) {
           g = lut[c + 1];
           b = lut[c + 2];
         } else {
-          r = 12;
-          g = 34;
-          b = 66;
+          // Natural colour: deep blue water, a little greener and brighter toward the tropics.
+          const warm = Math.max(0, 1 - Math.abs(lat) / 55);
+          r = 14 + 14 * warm;
+          g = 58 + 44 * warm;
+          b = 118 + 44 * warm;
         }
         data[o] = r * light;
         data[o + 1] = g * light;
@@ -190,13 +203,6 @@ export function createGlobe(host, { land, coast }) {
     }
     rasterCtx.putImageData(img, 0, 0);
   }
-
-  const stars = Array.from({ length: 260 }, (_, i) => {
-    const a = Math.sin(i * 127.1) * 43758.5453;
-    const b = Math.sin(i * 311.7) * 24634.6345;
-    const c = Math.sin(i * 74.7) * 9182.221;
-    return [a - Math.floor(a), b - Math.floor(b), c - Math.floor(c)];
-  });
 
   function strokeLines(ctx, lines, scale) {
     ctx.beginPath();
@@ -247,16 +253,11 @@ export function createGlobe(host, { land, coast }) {
     base.setTransform(dpr, 0, 0, dpr, 0, 0);
     base.clearRect(0, 0, width, height);
 
-    for (const [sx, sy, sb] of stars) {
-      base.fillStyle = `rgba(210,225,255,${0.15 + sb * 0.5})`;
-      base.fillRect(sx * width, sy * height, sb > 0.85 ? 1.6 : 1, sb > 0.85 ? 1.6 : 1);
-    }
-
     // Atmosphere: a soft halo outside the limb.
     const halo = base.createRadialGradient(cx, cy, radius * 0.96, cx, cy, radius * 1.16);
-    halo.addColorStop(0, "rgba(96,190,255,0.42)");
-    halo.addColorStop(0.3, "rgba(70,150,255,0.14)");
-    halo.addColorStop(1, "rgba(40,90,200,0)");
+    halo.addColorStop(0, "rgba(60,150,255,0.45)");
+    halo.addColorStop(0.35, "rgba(90,160,255,0.16)");
+    halo.addColorStop(1, "rgba(120,170,255,0)");
     base.fillStyle = halo;
     base.beginPath();
     base.arc(cx, cy, radius * 1.16, 0, Math.PI * 2);
@@ -411,86 +412,48 @@ export function createGlobe(host, { land, coast }) {
     top.globalAlpha = 1;
   }
 
-  // A procedural satellite-style cloud shield: a dense core plus trailing spiral bands.
-  function drawCloud(point, size, time) {
+  // The storm itself: the shader's satellite picture, laid on the globe at true scale.
+  const cloud = createCloudRenderer(512);
+
+  function drawCloud(point, seed, time) {
     const xy = project(point.lat, point.lon);
     if (xy[2] <= 0.08) {
       return;
     }
     const pxPerKm = (radius * DEG) / 111.2;
-    const strength = clamp((point.v - 8) / 50, 0.12, 1.15);
-    // Drawn about twice life size (with a floor), or the storm would be a speck on a whole-Earth view.
-    const extent = Math.max(26, size * pxPerKm * (2.3 + 1.1 * strength)) * (0.6 + 0.4 * xy[2]);
-    const h = point.lat >= 0 ? 1 : -1;
-    // Screen y points down, so a northern (counterclockwise) storm turns with a negative angle.
-    const turn = -h * time * (0.25 + 0.5 * strength);
-    const organised = clamp((point.v - 14) / 28, 0, 1);
-    const fade = point.land ? 0.6 : 1;
-
-    top.save();
-    top.translate(xy[0], xy[1]);
-    top.scale(1, 0.75 + 0.25 * xy[2]);
-    top.globalCompositeOperation = "lighter";
-
-    const core = top.createRadialGradient(0, 0, 0, 0, 0, extent * 0.5);
-    core.addColorStop(0, `rgba(255,255,255,${0.5 * fade})`);
-    core.addColorStop(0.35, `rgba(235,244,255,${0.3 * fade})`);
-    core.addColorStop(1, "rgba(220,235,255,0)");
-    top.fillStyle = core;
-    top.beginPath();
-    top.arc(0, 0, extent * 0.5, 0, Math.PI * 2);
-    top.fill();
-
-    const arms = point.v > 30 ? 3 : 2;
-    for (let arm = 0; arm < arms; arm += 1) {
-      const start = (arm / arms) * Math.PI * 2 + turn;
-      for (let s = 0; s < 34; s += 1) {
-        const t = s / 33;
-        // Bands trail behind the rotation: clockwise outward in the north.
-        const angle = start + h * (0.5 + 3.4 * organised + 1.2) * t;
-        const r = extent * (0.14 + 0.92 * Math.pow(t, 0.85));
-        const wobble = Math.sin(s * 1.7 + arm * 2.1) * extent * 0.035;
-        const x = Math.cos(angle) * (r + wobble);
-        const y = Math.sin(angle) * (r + wobble);
-        const blob = extent * (0.2 - 0.09 * t) * (0.7 + 0.3 * Math.sin(s * 2.3 + arm));
-        const a = (0.2 * (1 - t * 0.85) + 0.02) * fade * (0.6 + 0.4 * strength);
-        const g = top.createRadialGradient(x, y, 0, x, y, blob);
-        g.addColorStop(0, `rgba(255,255,255,${a})`);
-        g.addColorStop(1, "rgba(230,240,255,0)");
-        top.fillStyle = g;
-        top.beginPath();
-        top.arc(x, y, blob, 0, Math.PI * 2);
-        top.fill();
-      }
-    }
-    top.globalCompositeOperation = "source-over";
-    if (point.v >= 36 && !point.land) {
-      const eye = clamp(extent * 0.045, 2, 9);
-      top.fillStyle = "rgba(6,16,34,0.9)";
+    const half = Math.max(44, point.r34 * VIEW_R34 * pxPerKm);
+    const squash = 0.72 + 0.28 * xy[2];
+    if (cloud.ok) {
+      cloud.render(point, time, { infrared: scene.infrared, seed });
+      // Turn the sprite so its north follows the globe's north at this spot.
+      const north = project(Math.min(89, point.lat + 1), point.lon);
+      const tilt = Math.atan2(north[0] - xy[0], xy[1] - north[1]);
+      top.save();
+      top.translate(xy[0], xy[1]);
+      top.rotate(tilt);
+      top.scale(1, squash);
+      top.globalAlpha = 0.97;
+      top.drawImage(cloud.canvas, -half, -half, half * 2, half * 2);
+      top.restore();
+    } else {
+      const g = top.createRadialGradient(xy[0], xy[1], 0, xy[0], xy[1], half * 0.4);
+      g.addColorStop(0, "rgba(255,255,255,0.85)");
+      g.addColorStop(1, "rgba(255,255,255,0)");
+      top.fillStyle = g;
       top.beginPath();
-      top.arc(0, 0, eye, 0, Math.PI * 2);
+      top.arc(xy[0], xy[1], half * 0.4, 0, Math.PI * 2);
       top.fill();
     }
-    top.restore();
-
-    // Gale-force wind radius, larger for a stronger storm.
-    if (point.v >= 17.2) {
-      const gale = size * pxPerKm * clamp(0.45 + (point.v - 17) / 45, 0.45, 1.25) * (0.6 + 0.4 * xy[2]);
+    if (point.v >= 17.2 && scene.rings) {
+      const gale = point.r34 * pxPerKm;
       top.setLineDash([4, 5]);
       top.lineWidth = 1;
-      top.strokeStyle = "rgba(246,221,92,0.75)";
+      top.strokeStyle = "rgba(255,225,90,0.9)";
       top.beginPath();
-      top.ellipse(xy[0], xy[1], gale, gale * (0.75 + 0.25 * xy[2]), 0, 0, Math.PI * 2);
+      top.ellipse(xy[0], xy[1], gale, gale * squash, 0, 0, Math.PI * 2);
       top.stroke();
       top.setLineDash([]);
     }
-    top.fillStyle = colorOf(point.v);
-    top.strokeStyle = "rgba(5,10,20,0.9)";
-    top.lineWidth = 1.5;
-    top.beginPath();
-    top.arc(xy[0], xy[1], 4, 0, Math.PI * 2);
-    top.fill();
-    top.stroke();
   }
 
   function marker(lat, lon, colour, label) {
@@ -586,7 +549,7 @@ export function createGlobe(host, { land, coast }) {
         top.stroke();
       }
       const p = storm.points[Math.min(storm.points.length - 1, Math.round(scene.hour))];
-      drawCloud(p, storm.size, reduceMotion ? 0 : time);
+      drawCloud(p, storm.seed, reduceMotion ? scene.hour * 0.05 : time * 0.6 + scene.hour * 0.05);
     }
     top.restore();
 
@@ -763,6 +726,7 @@ export function createGlobe(host, { land, coast }) {
     view,
     scene,
     project,
+    cloud,
     on(name, fn) {
       handlers[name] = fn;
     },
